@@ -3,7 +3,7 @@
 import os
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, and_, or_
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, joinedload
 from dotenv import load_dotenv
 from database_schema import Event, Market
 
@@ -19,7 +19,10 @@ def get_future_events(limit=10):
     session = Session()
     now = datetime.now(timezone.utc)
 
-    future_events = session.query(Event).filter(
+    # Use joinedload to eager load markets
+    future_events = session.query(Event).options(
+        joinedload(Event.markets)
+    ).filter(
         Event.end_date > now,
         Event.active == True
     ).order_by(Event.end_date.asc()).limit(limit).all()
@@ -39,8 +42,10 @@ def get_events_by_tag(tag_keyword, limit=10):
     session = Session()
     now = datetime.now(timezone.utc)
 
-    # Query events with future end dates
-    all_future_events = session.query(Event).filter(
+    # Query events with future end dates - use joinedload for markets
+    all_future_events = session.query(Event).options(
+        joinedload(Event.markets)
+    ).filter(
         Event.end_date > now,
         Event.active == True
     ).all()
@@ -136,6 +141,50 @@ def get_all_unique_tags():
     return sorted(list(unique_tags))
 
 
+def get_crypto_events(limit=10):
+    """Get crypto-related events - more comprehensive search"""
+    session = Session()
+    now = datetime.now(timezone.utc)
+
+    # Get all future active events with markets
+    all_future_events = session.query(Event).options(
+        joinedload(Event.markets)
+    ).filter(
+        Event.end_date > now,
+        Event.active == True
+    ).all()
+
+    crypto_keywords = ['crypto', 'bitcoin', 'btc', 'ethereum', 'eth', 'solana', 'sol',
+                       'xrp', 'dogecoin', 'doge', 'blockchain', 'defi', 'nft']
+
+    matching_events = []
+    for event in all_future_events:
+        # Check tags
+        if event.tags:
+            for tag in event.tags:
+                tag_str = ''
+                if isinstance(tag, dict):
+                    tag_str = f"{tag.get('label', '')} {tag.get('slug', '')}".lower()
+                elif isinstance(tag, str):
+                    tag_str = tag.lower()
+
+                if any(keyword in tag_str for keyword in crypto_keywords):
+                    matching_events.append(event)
+                    break
+
+        # Check title
+        if event not in matching_events:
+            title_lower = event.title.lower()
+            if any(keyword in title_lower for keyword in crypto_keywords):
+                matching_events.append(event)
+
+        if len(matching_events) >= limit:
+            break
+
+    session.close()
+    return matching_events
+
+
 def main():
     print("Polymarket Database Query Tool")
     print("=" * 80 + "\n")
@@ -163,42 +212,21 @@ def main():
     if len(all_tags) > 30:
         print(f"  ... and {len(all_tags) - 30} more")
 
-    # Query crypto events by tag
+    # Query crypto events
     print("\n" + "=" * 80)
-    print("CRYPTO EVENTS (searching by 'crypto' tag)")
+    print("CRYPTO EVENTS")
     print("=" * 80)
 
-    crypto_events = get_events_by_tag('crypto', limit=5)
+    crypto_events = get_crypto_events(limit=10)
 
     if crypto_events:
-        print(f"\nFound {len(crypto_events)} crypto events with future end dates:\n")
-        for event in crypto_events[:3]:  # Show first 3 in detail
+        print(f"\nFound {len(crypto_events)} crypto events with future end dates\n")
+
+        # Show first 5 in detail
+        for event in crypto_events[:5]:
             display_event_details(event)
     else:
-        print("\nNo crypto events found by tag. Trying keyword search...")
-
-        # Try keyword search instead
-        crypto_markets = search_markets_by_keyword('bitcoin', limit=5)
-        crypto_markets.extend(search_markets_by_keyword('ethereum', limit=5))
-        crypto_markets.extend(search_markets_by_keyword('crypto', limit=5))
-
-        # Get unique markets
-        seen_ids = set()
-        unique_markets = []
-        for market in crypto_markets:
-            if market.id not in seen_ids:
-                unique_markets.append(market)
-                seen_ids.add(market.id)
-
-        print(f"\nFound {len(unique_markets)} crypto markets by keyword search:\n")
-        for market in unique_markets[:5]:
-            print(f"\n{'-' * 80}")
-            print(f"Market: {market.question}")
-            print(f"End Date: {market.end_date}")
-            print(f"Outcomes: {', '.join(market.outcomes) if market.outcomes else 'N/A'}")
-            print(f"Best Bid: {market.best_bid:.3f}, Best Ask: {market.best_ask:.3f}")
-            print(f"Volume 24h: ${market.volume_24hr:,}")
-            print(f"Accepting Orders: {market.accepting_orders}")
+        print("\nNo crypto events found.")
 
     # Show some other future events
     print("\n" + "=" * 80)
@@ -210,8 +238,8 @@ def main():
         print(f"\n{event.title}")
         print(f"  End Date: {event.end_date}")
         print(f"  Markets: {len(event.markets)}")
-        print(
-            f"  Tags: {', '.join([tag.get('label', tag) if isinstance(tag, dict) else tag for tag in (event.tags or [])])}")
+        tags_str = ', '.join([tag.get('label', tag) if isinstance(tag, dict) else tag for tag in (event.tags or [])])
+        print(f"  Tags: {tags_str if tags_str else 'None'}")
 
 
 if __name__ == "__main__":
